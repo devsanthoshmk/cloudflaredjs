@@ -241,6 +241,25 @@ This project is licensed under the [MIT License](LICENSE).
 
 ---
 
+## ⚠️ Disclaimer
+
+`cloudflaredjs` is intended **only for testing, development, and preview purposes**.  
+It is **not suitable for deploying production websites** — nor is it designed to be used as a permanent hosting solution.
+
+This module operates on top of **Cloudflare Quick Tunnels**, and therefore **must comply with Cloudflare’s Terms of Service**.  
+By using this package, **you are responsible** for ensuring your usage aligns with those terms.
+
+### Please Note:
+
+- Do **not** create or run more than **3–4 simultaneous tunnels**.
+- Do **not** start tunnels repeatedly in short intervals.  
+  Excessive use may lead to **temporary IP blocking by Cloudflare** (typically 10–15 minutes).
+- Misuse of Quick Tunnels may cause the module to behave **unexpectedly** or fail.
+
+Use responsibly, and always for legitimate development workflows.
+
+---
+
 ## ❤️ Support
 
 If you find this helpful, give it a ⭐ on GitHub!
