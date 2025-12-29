@@ -279,8 +279,9 @@ export function createTunnel() {
                 if (args.verbose === true) console.log(`[cloudflared-js] Fetch status: ${res.status}`);
                 
                 // If status is not 200 (or any other success status), it's considered a failure.
-                if (res.status !== 200) {
-                    if (args.verbose === true) console.log("[cloudflared-js] Detected non-200 status, rotating tunnel");
+                // Modified to only restart on Cloudflare Gateway errors (502/503)
+                if (res.status === 502 || res.status === 503) {
+                    if (args.verbose === true) console.log("[cloudflared-js] Detected Gateway Error (502/503), rotating tunnel");
                     
                     // Stop the current interval. A new one will be started by the recursive call.
                     if(retryInterval) clearInterval(retryInterval);
