@@ -49,7 +49,7 @@ You must have [`cloudflared`](https://developers.cloudflare.com/cloudflare-one/c
 ## 📦 Installation
 
 ```bash
-npm install cloudflaredjs
+npm install github:devsanthoshmk/cloudflaredjs
 ```
 
 ---
