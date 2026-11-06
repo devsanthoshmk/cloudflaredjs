@@ -1,265 +1,133 @@
-# 🌩️ cloudflaredjs
+# cloudflaredjs
 
-> A robust Node.js wrapper for **cloudflared** to create, manage, and automatically maintain "Quick Tunnels" with a stable, persistent URL.
+Cloudflare quick tunnels Node.js manager. Expose localhost to the internet with programmatic cloudflared process management, URL extraction, and automatic rotation.
 
----
+## Purpose
 
-## 🚨 The Problem
+`cloudflaredjs` is a Node.js wrapper for Cloudflare quick tunnels. It acts as an open source ngrok alternative that runs on Cloudflare edge infrastructure.
 
-Cloudflare’s “Quick Tunnels” (`cloudflared tunnel --url http://localhost:3000`) are a fantastic way to instantly expose your local web server to the internet.  
-But the generated URL (`https://[random-name].trycloudflare.com`) is **ephemeral** and **random** — it changes every time the tunnel restarts.
+Cloudflare quick tunnels expose local web applications to the internet without an account, custom domain, or configuration file. Running `cloudflared tunnel --url http://localhost:3000` generates an ephemeral `trycloudflare.com` URL. When the tunnel connection drops, restarting `cloudflared` generates a different random URL.
 
-That makes it unusable for:
+`cloudflaredjs` manages this lifecycle in JavaScript. The module starts the child process, extracts the public URL from the process output, polls the connection, and restarts the tunnel when Cloudflare disconnects. You can capture the new URL in a callback and update your database, DNS records, or webhook endpoints.
 
-- **Sharing a demo URL** — can’t point `my-demo.pages.dev` to a changing address.
-- **Webhook Development** — services like Stripe or GitHub require a fixed URL.
-- **Multi-device Testing** — new URL every restart.
+## Architecture
 
----
+`cloudflaredjs` coordinates four mechanisms:
 
-## 💡 The Solution
+1. Process spawning. The library calls `child_process.spawn` to run `cloudflared tunnel --url http://localhost:<port>`. On POSIX systems, it spawns detached child processes in an isolated process group. On Windows, it spawns standard child processes.
+2. Output parsing. The module reads stdout and stderr lines through Node.js `readline`. It matches URLs ending with `trycloudflare.com` using regular expressions. If 11 lines pass without finding a URL, the startup promise rejects and the process terminates.
+3. Health monitoring and rotation. When `autoFaultDetectionAndUpdate` is true, an interval timer polls the public tunnel URL using global `fetch` every `delay` milliseconds. If Cloudflare returns an HTTP 502 or 503 gateway error, the library kills the process, starts a fresh tunnel, and passes the new URL to `successCallback`. If consecutive failures exceed `afterFaultRetries`, the loop stops and calls `faultCallback`.
+4. Clean termination. The `killChild` method stops the active tunnel and clears all active timers. On POSIX systems, it sends `SIGTERM` to the process group (`-pid`). On Windows, it calls `taskkill /PID <pid> /T /F`. The library also registers listeners for `SIGINT`, `SIGTERM`, `exit`, `uncaughtException`, and `unhandledRejection` to kill child processes before Node.js exits.
 
-`cloudflaredjs` turns Cloudflare’s ephemeral tunnels into **self-healing, programmatically managed tunnels**.
+## Setup
 
-It spawns and monitors a `cloudflared` process, captures its URL, and **automatically restarts** if it fails — invoking your callback with the new live URL each time.
+### Prerequisites
 
-You can store this URL in an external database (e.g., Supabase, Firebase, or Cloudflare KV) and have your frontend dynamically fetch it.
+- Node.js 18 or higher. The health check loop uses the native global `fetch` API.
+- The `cloudflared` executable installed and available in your system `PATH`. Refer to Cloudflare documentation for official package manager or binary download instructions.
 
-✅ Your public site (like `my-demo.pages.dev`) becomes a **stable, shareable endpoint** for your local dev server — complete with live HMR!
+### Installation
 
----
-
-## ✨ Features
-
-- 🚀 **Programmatic Control:** Start & stop `cloudflared` from Node.js.
-- 🌐 **URL Parsing:** Returns the `.trycloudflare.com` URL as a Promise.
-- 🩺 **Automatic Fault Detection:** Health checks to detect downtime.
-- ♻️ **Auto-Restart & Update:** Reconnects automatically with new URL.
-- 🧹 **Robust Cleanup:** Gracefully kills child processes on exit.
-- 🔍 **Verbose Logging:** Optional detailed logs for debugging.
-
----
-
-## ⚙️ Prerequisites
-
-You must have [`cloudflared`](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation) installed and available in your system’s `PATH`.
-
----
-
-## 📦 Installation
+Install the package directly from GitHub:
 
 ```bash
 npm install github:devsanthoshmk/cloudflaredjs
 ```
 
----
+## Usage
 
-## 🧠 Usage
+### Start a basic localhost tunnel
 
-### 1️⃣ Basic Usage (Get URL Once)
+Start a single quick tunnel and obtain the public URL:
 
-For simple scripts where you just need the public URL once.
+```javascript
+import { createTunnel } from 'cloudflaredjs';
 
-```js
-import { createTunnel } from "cloudflaredjs";
+const tunnel = createTunnel();
 
-const { startCloudflared, killChild } = createTunnel();
-
-(async () => {
-  try {
-    const url = await startCloudflared({ port: 3000, verbose: true });
-    console.log(`Tunnel started at: ${url}`);
-
-    // ... your app logic ...
-
-    // Stop tunnel when done
-    // killChild();
-  } catch (e) {
-    console.error("Failed to start tunnel:", e);
-  }
-})();
+try {
+  const url = await tunnel.startCloudflared({
+    port: 3000,
+    verbose: true,
+  });
+  console.log('Tunnel public URL:', url);
+} catch (error) {
+  console.error('Failed to create tunnel:', error);
+} finally {
+  // Stop the tunnel when finished:
+  // tunnel.killChild();
+}
 ```
 
----
+### Automatic tunnel rotation with callbacks
 
-### 2️⃣ Advanced Usage (The “Stable URL” Pattern)
+Monitor the tunnel and receive new URLs automatically when Cloudflare drops the connection:
 
-Keep a tunnel **alive** and **auto-update** your database with the latest URL.
+```javascript
+import { createTunnel } from 'cloudflaredjs';
 
-```js
-import { createTunnel } from "cloudflaredjs";
-// import { updateUrlInDatabase } from './my-database-client';
+const tunnel = createTunnel();
 
-const { startCloudflared, killChild } = createTunnel();
-
-const tunnelOptions = {
+const url = await tunnel.startCloudflared({
   port: 3000,
   verbose: true,
   autoFaultDetectionAndUpdate: true,
   delay: 8000,
   afterFaultRetries: 10,
-
-  successCallback: async (url) => {
-    console.log(`New tunnel URL: ${url}`);
-    try {
-      // await updateUrlInDatabase('my_demo_tunnel', url);
-      console.log("Successfully updated database with new URL.");
-    } catch (dbError) {
-      console.error("Failed to update database:", dbError);
-    }
+  successCallback: (newUrl) => {
+    console.log('Tunnel rotated to new URL:', newUrl);
+    // Write newUrl to your database, key-value store, or webhook destination
   },
-
   faultCallback: () => {
-    console.error("Tunnel has failed permanently. Sending alert...");
-    // alertTeam('CRITICAL: Dev tunnel is down!');
+    console.error('Tunnel failed permanently after exhausting retries.');
   },
-};
-
-startCloudflared(tunnelOptions).catch((e) => {
-  console.error("Failed to start initial tunnel:", e);
 });
 
-process.on("SIGINT", () => {
-  console.log("Shutting down tunnel...");
-  killChild();
+console.log('Initial tunnel URL:', url);
+
+process.on('SIGINT', () => {
+  tunnel.killChild();
   process.exit();
 });
 ```
 
----
+### Web preview with dynamic frontend
 
-## 🧩 Use Case Example — The `<iframe>` Demo Site
+When sharing dev environments or testing webhooks, quick tunnel URLs change across restarts. To maintain a stable entry point, host a static page on Cloudflare Pages or Vercel that renders the dynamic URL inside an `<iframe>`:
 
-### **Backend** (running `cloudflaredjs`)
+1. The backend service runs `cloudflaredjs` and saves every new URL from `successCallback` to an API or database.
+2. The static frontend queries that API on page load and assigns the target URL to the iframe `src`.
+3. Visitors use the permanent frontend domain while viewing live updates from your local server.
 
-Use the Advanced Usage example above to keep a live tunnel URL updated in your DB.
+## Configuration
 
-### **Frontend** (`my-demo.pages.dev`)
+The `startCloudflared` function accepts the following options:
 
-```html
-<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <title>My Dev Preview</title>
-    <style>
-      body,
-      html {
-        margin: 0;
-        height: 100%;
-      }
-      iframe {
-        width: 100%;
-        height: 100%;
-        border: none;
-      }
-      #loader {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        height: 100%;
-        font-family: sans-serif;
-        font-size: 1.2em;
-        color: #555;
-      }
-    </style>
-  </head>
-  <body>
-    <div id="loader">Loading latest dev build...</div>
-    <iframe id="demo-frame" style="display:none;"></iframe>
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `port` | number | None (required) | Local port number forwarded through the tunnel. |
+| `verbose` | boolean | `false` | Prints runtime messages to the console and writes stdout and stderr logs to `./cloudflaredjs.<port>.logs.txt`. |
+| `autoFaultDetectionAndUpdate` | boolean | `false` | Enables the background health check loop and restarts the tunnel on HTTP 502 or 503 errors. |
+| `successCallback` | function | `() => {}` | Receives the new tunnel URL string after an automatic restart. |
+| `faultCallback` | function | None | Called when consecutive restart failures exceed `afterFaultRetries`. Required when `autoFaultDetectionAndUpdate` is `true`. |
+| `delay` | number | `8000` | Interval in milliseconds between health check requests. |
+| `afterFaultRetries` | number | `10` | Maximum number of consecutive health check failures before stopping retries. |
 
-    <script>
-      const DB_URL = "https://your-api.com/get-tunnel-url?id=my_demo_tunnel";
+### Methods
 
-      async function fetchTunnelUrl() {
-        try {
-          const response = await fetch(DB_URL);
-          if (!response.ok) throw new Error("Failed to fetch URL");
-          const data = await response.json();
+`createTunnel()` returns an object with two functions:
 
-          const iframe = document.getElementById("demo-frame");
-          iframe.src = data.url;
+- `startCloudflared(options)`. Spawns the `cloudflared` process and returns a `Promise<string>` resolving to the `trycloudflare.com` URL.
+- `killChild()`. Stops the running child process and clears the health check timer.
 
-          iframe.onload = () => {
-            document.getElementById("loader").style.display = "none";
-            iframe.style.display = "block";
-          };
-        } catch (error) {
-          document.getElementById("loader").innerText =
-            "Error loading preview. Please try again later.";
-          console.error(error);
-        }
-      }
+## Operational limits
 
-      fetchTunnelUrl();
-    </script>
-  </body>
-</html>
-```
+Quick tunnels run on shared Cloudflare infrastructure under Cloudflare terms of service:
 
-Now you can share your **permanent URL** (like `my-demo.pages.dev`) — it will always display your live `localhost:3000` app.
+- Run no more than 3 to 4 simultaneous tunnels per machine.
+- Avoid rapid restart loops. Frequent reconnections trigger temporary Cloudflare IP blocks that last 10 to 15 minutes.
+- Quick tunnels target development, staging previews, and webhook testing. Do not use quick tunnels for permanent production hosting.
 
----
+## License
 
-## 📚 API Reference
-
-### `createTunnel()`
-
-Factory function that creates an isolated tunnel manager.
-
-**Returns:** `{ startCloudflared, killChild }`
-
----
-
-### `startCloudflared(options)`
-
-Starts a cloudflared quick tunnel.
-
-| Option                        | Type       | Default | Description                                                |
-| ----------------------------- | ---------- | ------- | ---------------------------------------------------------- |
-| `port`                        | `number`   | —       | **Required.** Local port to expose (e.g. 3000).            |
-| `verbose`                     | `boolean`  | `false` | Enables detailed logging.                                  |
-| `autoFaultDetectionAndUpdate` | `boolean`  | `false` | Automatically monitors and restarts tunnels.               |
-| `successCallback(url)`        | `function` | —       | Called on every successful start/restart with the new URL. |
-| `faultCallback()`             | `function` | —       | Called if the tunnel permanently fails after retries.      |
-| `delay`                       | `number`   | `8000`  | Interval (ms) for health checks.                           |
-| `afterFaultRetries`           | `number`   | `10`    | Number of failed checks before triggering `faultCallback`. |
-
-**Returns:** `Promise<string>` — Resolves with the public tunnel URL.
-
----
-
-### `killChild()`
-
-Stops the tunnel process and cleans up all internal intervals.
-
----
-
-## 📜 License
-
-This project is licensed under the [MIT License](LICENSE).
-
----
-
-## ⚠️ Disclaimer
-
-`cloudflaredjs` is intended **only for testing, development, and preview purposes**.  
-It is **not suitable for deploying production websites** — nor is it designed to be used as a permanent hosting solution.
-
-This module operates on top of **Cloudflare Quick Tunnels**, and therefore **must comply with Cloudflare’s Terms of Service**.  
-By using this package, **you are responsible** for ensuring your usage aligns with those terms.
-
-### Please Note:
-
-- Do **not** create or run more than **3–4 simultaneous tunnels**.
-- Do **not** start tunnels repeatedly in short intervals.  
-  Excessive use may lead to **temporary IP blocking by Cloudflare** (typically 10–15 minutes).
-- Misuse of Quick Tunnels may cause the module to behave **unexpectedly** or fail.
-
-Use responsibly, and always for legitimate development workflows.
-
----
-
-## ❤️ Support
-
-If you find this helpful, give it a ⭐ on GitHub!
+MIT
